@@ -36,6 +36,45 @@ export async function POST(request: NextRequest) {
       return await handleTextRecipe(message, pendingRecipe);
     }
 
+    // Check if user is providing cookbook source info for a pending recipe
+    if (pendingRecipe?.needs_source_info) {
+      const lowerMsg = message.toLowerCase().trim();
+      
+      // If user says "skip", mark as "none"
+      if (lowerMsg === 'skip' || lowerMsg === 'no') {
+        pendingRecipe.cookbook_name = null;
+        pendingRecipe.cookbook_page = null;
+        pendingRecipe.source_type = 'none';
+        delete pendingRecipe.needs_source_info;
+        
+        return NextResponse.json({
+          response: `Got it! I'll save this recipe with no source listed.\n\nReply "save recipe" to add it to your collection!`,
+          recipeData: pendingRecipe,
+        });
+      }
+      
+      // Try to extract cookbook name and page from message
+      const pageMatch = message.match(/page\s+(\d+)/i) || message.match(/p\.?\s*(\d+)/i) || message.match(/pg\.?\s*(\d+)/i);
+      const bookNameMatch = message.replace(/page\s+\d+/i, '').replace(/p\.?\s*\d+/i, '').replace(/pg\.?\s*\d+/i, '').trim();
+      
+      if (bookNameMatch && bookNameMatch.length > 0) {
+        pendingRecipe.cookbook_name = bookNameMatch;
+        pendingRecipe.cookbook_page = pageMatch ? pageMatch[1] : null;
+        pendingRecipe.source_type = 'cookbook';
+        delete pendingRecipe.needs_source_info;
+        
+        let responseText = `Perfect! Added source info:\n`;
+        responseText += `📖 **${pendingRecipe.cookbook_name}**`;
+        if (pendingRecipe.cookbook_page) responseText += ` (page ${pendingRecipe.cookbook_page})`;
+        responseText += `\n\nReply "save recipe" to add it to your collection!`;
+        
+        return NextResponse.json({
+          response: responseText,
+          recipeData: pendingRecipe,
+        });
+      }
+    }
+
     // Parse the natural language query
     const { filters, error: parseError } = await parseNaturalLanguageQuery(message);
     
@@ -137,7 +176,31 @@ async function handleTextRecipe(recipeText: string, pendingRecipe?: any) {
       responseText += `\n---\n\n${recipeData.recipe_text}\n\n---\n`;
     }
     
+    // Determine source type and check if we need more info
+    if (recipeData.source_link) {
+      recipeData.source_type = 'url';
+    } else if (recipeData.cookbook_name) {
+      recipeData.source_type = 'cookbook';
+    } else {
+      // Photo with no detected source - ask user
+      responseText += `\n\n📖 **Is this from a cookbook?**\nIf so, please tell me the cookbook name and page number (e.g., "Joy of Cooking page 42"), or reply "skip" if you don't want to add that info.\n\n`;
+      responseText += `Otherwise, reply "save recipe" to add it to your collection!`;
+      
+      // Mark recipe as needing source info
+      recipeData.needs_source_info = true;
+      recipeData.source_type = 'photo';
+      
+      return NextResponse.json({
+        response: responseText,
+        recipeData,
+      });
+    }
+    
     responseText += `\nReply "save recipe" or "yes" to add it to your collection!`;
+    
+    if (recipeData.cookbook_name) {
+      responseText = responseText.replace(/\nReply/, `\n📖 Source: ${recipeData.cookbook_name}${recipeData.cookbook_page ? ` (page ${recipeData.cookbook_page})` : ''}\n\nReply`);
+    }
 
     return NextResponse.json({
       response: responseText,
@@ -175,6 +238,11 @@ async function handleUrlSubmission(url: string, userMessage: string) {
     }
 
     const { recipeData, partialSuccess } = data;
+    
+    // Set source type to URL and ensure source_link is set
+    recipeData.source_type = 'url';
+    recipeData.source_link = url;
+    
     let responseText = '';
     
     if (partialSuccess) {

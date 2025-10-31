@@ -78,6 +78,8 @@ Return JSON with these fields:
 - time_minutes: number (total cooking time — null if not mentioned)
 - notes: string (tips, substitutions, or "No additional notes")
 - recipe_text: string (cleaned ingredients + instructions, or just ingredients if that's all provided)
+- cookbook_name: string or null (if text mentions a cookbook name, extract it; otherwise null)
+- cookbook_page: string or null (if text mentions a page number, extract it; otherwise null)
 
 ## EXAMPLES
 
