@@ -1,0 +1,604 @@
+/**
+ * Chat Interface Component - Material-UI Design
+ * Main conversational interface for adding and querying recipes
+ */
+
+'use client';
+
+import { useState, useRef, useEffect } from 'react';
+import {
+  Box,
+  Paper,
+  TextField,
+  IconButton,
+  Typography,
+  Avatar,
+  InputAdornment,
+  CircularProgress,
+} from '@mui/material';
+import SendIcon from '@mui/icons-material/Send';
+import CameraAltIcon from '@mui/icons-material/CameraAlt';
+import SmartToyIcon from '@mui/icons-material/SmartToy';
+import PersonIcon from '@mui/icons-material/Person';
+
+interface Message {
+  id: string;
+  text: string;
+  sender: 'user' | 'ai';
+  timestamp: Date;
+}
+
+interface ChatInterfaceProps {
+  onSendMessage?: (message: string) => Promise<string>;
+  placeholder?: string;
+  userId?: string | null;
+  onRecipeSaved?: () => void;
+}
+
+export default function ChatInterface({
+  onSendMessage,
+  placeholder = "Ask me about recipes, or share a photo/URL to add one...",
+  userId = null,
+  onRecipeSaved,
+}: ChatInterfaceProps) {
+  const [messages, setMessages] = useState<Message[]>([
+    {
+      id: '1',
+      text: "Hi! I'm your Family Recipe Genie\n\nI can help you:\n• Add recipes from photos or website URLs\n• Search for recipes by ingredient, cuisine, or family member\n• Save your favorite recipes\n\nTry asking me something like:\n- \"Show me all chicken recipes\"\n- \"Find Mom's recipes\"\n- \"Easy Italian recipes under 30 minutes\"",
+      sender: 'ai',
+      timestamp: new Date(),
+    },
+  ]);
+  const [input, setInput] = useState('');
+  const [isLoading, setIsLoading] = useState(false);
+  const [pendingRecipe, setPendingRecipe] = useState<any>(null);
+  const [lastRecipes, setLastRecipes] = useState<any[]>([]);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages]);
+
+  const handleSend = async () => {
+    if (!input.trim() || isLoading) return;
+
+    const userMessage: Message = {
+      id: Date.now().toString(),
+      text: input,
+      sender: 'user',
+      timestamp: new Date(),
+    };
+
+    setMessages((prev) => [...prev, userMessage]);
+    const currentInput = input;
+    setInput('');
+    setIsLoading(true);
+
+    try {
+      // Check if user wants to save a pending recipe
+      if (pendingRecipe && (currentInput.toLowerCase().includes('save') || currentInput.toLowerCase().includes('yes'))) {
+        if (!userId) {
+          const aiMessage: Message = {
+            id: (Date.now() + 1).toString(),
+            text: "You need to be logged in to save recipes. Please sign in first!",
+            sender: 'ai',
+            timestamp: new Date(),
+          };
+          setMessages((prev) => [...prev, aiMessage]);
+          setIsLoading(false);
+          return;
+        }
+
+        // Save the recipe
+        const saveResponse = await fetch('/api/save-recipe', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            recipeData: pendingRecipe,
+            userId,
+          }),
+        });
+
+        const saveData = await saveResponse.json();
+
+        if (saveData.success) {
+          const aiMessage: Message = {
+            id: (Date.now() + 1).toString(),
+            text: `✅ Recipe saved successfully! "${pendingRecipe.recipe_name}" has been added to your collection. You can find it in the Browse Recipes tab!`,
+            sender: 'ai',
+            timestamp: new Date(),
+          };
+          setMessages((prev) => [...prev, aiMessage]);
+          setPendingRecipe(null);
+          if (onRecipeSaved) onRecipeSaved();
+        } else {
+          const aiMessage: Message = {
+            id: (Date.now() + 1).toString(),
+            text: `Sorry, I couldn't save the recipe: ${saveData.error}`,
+            sender: 'ai',
+            timestamp: new Date(),
+          };
+          setMessages((prev) => [...prev, aiMessage]);
+        }
+        setIsLoading(false);
+        return;
+      }
+
+      // Call the chat API
+      const response = await fetch('/api/chat', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          message: currentInput,
+          conversationHistory: messages.slice(-10), // Send last 10 messages for better context
+          pendingRecipe: pendingRecipe, // Include pending recipe for reference
+          lastRecipes: lastRecipes, // Include recently shown recipes for context
+        }),
+      });
+
+      const data = await response.json();
+
+      // DEBUG: Log debug info if present
+      if (data.debug) {
+        console.log('🐛 DEBUG INFO:', data.debug);
+        console.log('📊 Current lastRecipes state:', lastRecipes);
+      }
+
+      // Store pending recipe if one was extracted
+      if (data.recipeData) {
+        setPendingRecipe(data.recipeData);
+      }
+
+      // Store recipes if search results were returned
+      if (data.recipes && data.recipes.length > 0) {
+        setLastRecipes(data.recipes);
+      }
+
+      const aiMessage: Message = {
+        id: (Date.now() + 1).toString(),
+        text: data.response || "I'm not sure how to respond to that.",
+        sender: 'ai',
+        timestamp: new Date(),
+      };
+
+      setMessages((prev) => [...prev, aiMessage]);
+
+      // If custom handler is provided (for special actions)
+      if (onSendMessage && data.recipes) {
+        await onSendMessage(currentInput);
+      }
+    } catch (error: any) {
+      console.error('Chat error:', error);
+      const errorMessage: Message = {
+        id: (Date.now() + 1).toString(),
+        text: `Sorry, I encountered an error: ${error.message || String(error)}\n\nPlease check the terminal for details and try again!`,
+        sender: 'ai',
+        timestamp: new Date(),
+      };
+      setMessages((prev) => [...prev, errorMessage]);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleKeyPress = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      handleSend();
+    }
+  };
+
+  const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    // Convert image to JPEG on client side (handles HEIC and reduces size)
+    let processedFile: File = file;
+    try {
+      let blob: Blob = file;
+      
+      // Check if it's a HEIC file
+      const isHEIC = file.name.toLowerCase().endsWith('.heic') || 
+                     file.name.toLowerCase().endsWith('.heif') ||
+                     file.type === 'image/heic' ||
+                     file.type === 'image/heif';
+      
+      // Convert HEIC to JPEG using heic2any
+      if (isHEIC) {
+        console.log('🔄 Converting HEIC to JPEG...');
+        const heic2any = (await import('heic2any')).default;
+        blob = await heic2any({
+          blob: file,
+          toType: 'image/jpeg',
+          quality: 0.9,
+        }) as Blob;
+        console.log(`✅ HEIC converted: ${file.size} → ${blob.size} bytes`);
+      }
+      
+      // Now load the image and resize it
+      const img = new Image();
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      
+      await new Promise((resolve, reject) => {
+        img.onload = resolve;
+        img.onerror = reject;
+        img.src = URL.createObjectURL(blob);
+      });
+      
+      // Resize to max 1200px width to keep under 1MB
+      let width = img.width;
+      let height = img.height;
+      const maxWidth = 1200;
+      
+      if (width > maxWidth) {
+        height = (height * maxWidth) / width;
+        width = maxWidth;
+      }
+      
+      canvas.width = width;
+      canvas.height = height;
+      ctx?.drawImage(img, 0, 0, width, height);
+      
+      // Convert to JPEG blob with good compression
+      const finalBlob = await new Promise<Blob>((resolve) => {
+        canvas.toBlob((b) => resolve(b!), 'image/jpeg', 0.80);
+      });
+      
+      processedFile = new File([finalBlob], file.name.replace(/\.(heic|heif|png)$/i, '.jpg'), { 
+        type: 'image/jpeg' 
+      });
+      
+      URL.revokeObjectURL(img.src);
+      console.log(`✅ Final optimized: ${file.name} (${file.size} bytes) → ${processedFile.name} (${processedFile.size} bytes)`);
+    } catch (error) {
+      console.error('Client-side image conversion failed:', error);
+      // Show error message
+      const errorMessage: Message = {
+        id: Date.now().toString(),
+        text: '❌ Could not process this image format. Please try:\n• Taking a screenshot instead\n• Converting to JPEG first\n• Using a different photo',
+        sender: 'ai',
+        timestamp: new Date(),
+      };
+      setMessages((prev) => [...prev, errorMessage]);
+      return;
+    }
+
+    // Show user message
+    const userMessage: Message = {
+      id: Date.now().toString(),
+      text: `📸 Uploaded photo: ${processedFile.name}`,
+      sender: 'user',
+      timestamp: new Date(),
+    };
+    setMessages((prev) => [...prev, userMessage]);
+    
+    // Show processing message
+    const processingMessage: Message = {
+      id: (Date.now() + 1).toString(),
+      text: `⏳ Processing your photo... This should take 5-15 seconds.\n\nI'm:\n1. Reading the text from your image (OCR.space)\n2. Extracting recipe information with AI\n\nPlease wait...`,
+      sender: 'ai',
+      timestamp: new Date(),
+    };
+    setMessages((prev) => [...prev, processingMessage]);
+    setIsLoading(true);
+
+    try {
+      // Upload and process photo with timeout
+      const formData = new FormData();
+      formData.append('photo', processedFile);
+
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 30000); // 30 second timeout (OCR.space is much faster)
+
+      const response = await fetch('/api/process-photo', {
+        method: 'POST',
+        body: formData,
+        signal: controller.signal,
+      });
+
+      clearTimeout(timeoutId);
+      const data = await response.json();
+
+      if (data.error) {
+        const errorMessage: Message = {
+          id: (Date.now() + 1).toString(),
+          text: `Sorry, I couldn't process that photo: ${data.error}\n\nPlease try:\n• A clearer photo\n• Better lighting\n• A closer shot of the recipe text`,
+          sender: 'ai',
+          timestamp: new Date(),
+        };
+        setMessages((prev) => [...prev, errorMessage]);
+        return;
+      }
+
+      // Show extracted recipe data for confirmation
+      const { recipeData } = data;
+      setPendingRecipe(recipeData);
+      
+      let confirmText = `Great! I extracted this recipe from your photo:\n\n**${recipeData.recipe_name || 'Untitled Recipe'}**\n\n`;
+      if (recipeData.main_ingredient) confirmText += `Main Ingredient: ${recipeData.main_ingredient}\n`;
+      if (recipeData.cuisine) confirmText += `Cuisine: ${recipeData.cuisine}\n`;
+      if (recipeData.difficulty) confirmText += `Difficulty: ${recipeData.difficulty}/5\n`;
+      if (recipeData.time_minutes) confirmText += `Time: ${recipeData.time_minutes} minutes\n`;
+      
+      // Show the full recipe text
+      if (recipeData.recipe_text && recipeData.recipe_text.length > 0) {
+        confirmText += `\n---\n\n${recipeData.recipe_text}\n\n---\n`;
+      }
+      
+      confirmText += `\nReply "save recipe" to add it to your collection, or tell me what needs to be changed!`;
+      
+      const confirmMessage: Message = {
+        id: (Date.now() + 1).toString(),
+        text: confirmText,
+        sender: 'ai',
+        timestamp: new Date(),
+      };
+      setMessages((prev) => [...prev, confirmMessage]);
+
+    } catch (error: any) {
+      console.error('Photo processing error:', error);
+      const errorMessage: Message = {
+        id: (Date.now() + 1).toString(),
+        text: error.name === 'AbortError' 
+          ? '⏱️ Photo processing timed out (took longer than 30 seconds).\n\nPlease try:\n• A clearer, well-lit photo\n• Taking a screenshot instead\n• Using a website URL if available'
+          : 'Sorry, I encountered an error processing the photo. Please try again!',
+        sender: 'ai',
+        timestamp: new Date(),
+      };
+      setMessages((prev) => [...prev, errorMessage]);
+    } finally {
+      setIsLoading(false);
+      // Reset file input
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
+    }
+  };
+
+  return (
+    <Box sx={{ display: 'flex', flexDirection: 'column', height: '100%', bgcolor: '#f7f7f8' }}>
+
+      {/* Messages Container - ChatGPT Style */}
+      <Box
+        sx={{
+          flexGrow: 1,
+          overflowY: 'auto',
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+        }}
+      >
+        <Box sx={{ width: '100%', maxWidth: '800px', px: 3, py: 4 }}>
+          {messages.map((message) => (
+            <Box
+              key={message.id}
+              sx={{
+                display: 'flex',
+                gap: 2.5,
+                mb: 6,
+                alignItems: 'flex-start',
+                justifyContent: message.sender === 'user' ? 'flex-end' : 'flex-start',
+              }}
+            >
+              {message.sender === 'user' ? (
+                // User message - right aligned bubble
+                <Box
+                  sx={{
+                    maxWidth: '70%',
+                    bgcolor: '#ececf1',
+                    borderRadius: '18px',
+                    px: 3,
+                    py: 1.5,
+                  }}
+                >
+                  <Typography
+                    variant="body1"
+                    sx={{
+                      whiteSpace: 'pre-wrap',
+                      wordBreak: 'break-word',
+                      lineHeight: 1.75,
+                      fontSize: '16px',
+                      color: '#2d333a',
+                    }}
+                  >
+                    {message.text}
+                  </Typography>
+                </Box>
+              ) : (
+                // AI message - left aligned with avatar
+                <>
+                  {/* Avatar */}
+                  <Box
+                    sx={{
+                      width: 32,
+                      height: 32,
+                      borderRadius: '50%',
+                      bgcolor: '#19c37d',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      flexShrink: 0,
+                      color: 'white',
+                      fontWeight: 600,
+                      fontSize: '14px',
+                    }}
+                  >
+                    🧞
+                  </Box>
+
+                  {/* Message Content */}
+                  <Box sx={{ flexGrow: 1, minWidth: 0, pt: 0.5 }}>
+                    <Typography
+                      variant="body1"
+                      sx={{
+                        whiteSpace: 'pre-wrap',
+                        wordBreak: 'break-word',
+                        lineHeight: 1.75,
+                        fontSize: '16px',
+                        color: '#2d333a',
+                      }}
+                    >
+                      {message.text}
+                    </Typography>
+                  </Box>
+                </>
+              )}
+            </Box>
+          ))}
+
+          {/* Loading Indicator */}
+          {isLoading && (
+            <Box sx={{ display: 'flex', gap: 2.5, mb: 6, alignItems: 'flex-start' }}>
+              <Box
+                sx={{
+                  width: 32,
+                  height: 32,
+                  borderRadius: '50%',
+                  bgcolor: '#19c37d',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  flexShrink: 0,
+                  color: 'white',
+                }}
+              >
+                🧞
+              </Box>
+              <Box sx={{ pt: 1 }}>
+                <CircularProgress size={18} sx={{ color: '#19c37d' }} />
+              </Box>
+            </Box>
+          )}
+          <div ref={messagesEndRef} />
+        </Box>
+      </Box>
+
+      {/* Input Area - ChatGPT Style */}
+      <Box
+        sx={{
+          borderTop: '1px solid #d9d9e3',
+          bgcolor: 'white',
+          py: 3,
+          px: 2,
+          display: 'flex',
+          justifyContent: 'center',
+        }}
+      >
+        <Box sx={{ width: '100%', maxWidth: '800px' }}>
+          <Box
+            sx={{
+              display: 'flex',
+              gap: 1,
+              alignItems: 'flex-end',
+              bgcolor: 'white',
+              border: '1px solid #d9d9e3',
+              borderRadius: '12px',
+              px: 1.5,
+              py: 1,
+              boxShadow: '0 0 10px rgba(0,0,0,.05)',
+              transition: 'all 0.2s',
+              '&:focus-within': {
+                borderColor: '#19c37d',
+                boxShadow: '0 0 0 2px rgba(25, 195, 125, 0.1)',
+              },
+            }}
+          >
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/jpeg,image/jpg,image/png"
+              capture="environment"
+              onChange={handleFileSelect}
+              style={{ display: 'none' }}
+            />
+            
+            <IconButton
+              size="small"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={isLoading}
+              title="Upload photo (takes 5-15 seconds)"
+              sx={{
+                color: '#8e8ea0',
+                '&:hover': { color: '#2d333a', bgcolor: 'transparent' },
+                mb: 0.5,
+              }}
+            >
+              <CameraAltIcon fontSize="small" />
+            </IconButton>
+            
+            <TextField
+              fullWidth
+              multiline
+              maxRows={6}
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyPress={handleKeyPress}
+              placeholder={placeholder}
+              disabled={isLoading}
+              variant="standard"
+              InputProps={{
+                disableUnderline: true,
+                sx: {
+                  fontSize: '16px',
+                  color: '#2d333a',
+                  '& textarea': {
+                    '&::placeholder': {
+                      color: '#8e8ea0',
+                      opacity: 1,
+                    },
+                  },
+                },
+              }}
+              sx={{
+                '& .MuiInputBase-root': {
+                  py: 0.75,
+                },
+              }}
+            />
+            
+            <IconButton
+              size="small"
+              onClick={handleSend}
+              disabled={!input.trim() || isLoading}
+              sx={{
+                bgcolor: input.trim() && !isLoading ? '#19c37d' : '#d9d9e3',
+                color: 'white',
+                width: 32,
+                height: 32,
+                mb: 0.5,
+                '&:hover': {
+                  bgcolor: input.trim() && !isLoading ? '#17a368' : '#d9d9e3',
+                },
+                '&.Mui-disabled': {
+                  bgcolor: '#d9d9e3',
+                  color: 'white',
+                },
+              }}
+            >
+              <SendIcon fontSize="small" />
+            </IconButton>
+          </Box>
+          
+          <Typography
+            variant="caption"
+            sx={{
+              display: 'block',
+              textAlign: 'center',
+              mt: 1.5,
+              color: '#8e8ea0',
+              fontSize: '12px',
+            }}
+          >
+            Recipe Genie can make mistakes. Check important info.
+          </Typography>
+        </Box>
+      </Box>
+    </Box>
+  );
+}
